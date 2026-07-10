@@ -1,45 +1,46 @@
 # genesis-world CI — AMD RDNA4 (R9700) leg.
-# always-on default leg: gate push / workflow_dispatch. The CDNA (banff/MI300) leg
-# lives in a separate amd_cdna.yml (best-effort, dispatch/schedule).
+# Nightly auto-mode: checks out UPSTREAM main and runs the GPU test suite on an
+# AMD RDNA4 self-hosted runner (labels: self-hosted, amd, rdna4), so it tracks
+# the latest upstream without needing to sync this fork.
 #
-# Prereq: register a self-hosted runner on the R9700 host with
-#   labels = [self-hosted, amd, rdna4]
-# The runner host only needs docker + ROCm driver (/dev/kfd, /dev/dri);
-# all tests run inside the container.
+# NOTE: schedule/workflow_dispatch only fire from the repo DEFAULT branch, so this
+# file must live on the fork's default branch (main).
+#
+# Prereq: a self-hosted runner on the R9700 host with labels [self-hosted, amd, rdna4].
+# The host only needs docker + ROCm driver (/dev/kfd, /dev/dri); tests run in a container.
+#
+# Networking: the runner is outbound-only (polls GitHub); no inbound port is opened,
+# so the intranet node is not exposed. No fork-PR code runs (no pull_request trigger);
+# only upstream main is executed, inside a --rm container.
 name: AMD RDNA4 (R9700)
 
 on:
   workflow_dispatch: {}
-  push:
-    branches: ["amd-ci"]
-  # Enable once the required subset is stable, to avoid noisy PR gating:
-  # pull_request:
-  #   branches: ["main"]
+  schedule:
+    # 02:00 CST (18:00 UTC) nightly.
+    - cron: "0 18 * * *"
 
 concurrency:
-  group: amd-rdna4-${{ github.head_ref || github.ref }}
+  group: amd-rdna4-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   amd-rdna4-tests:
     name: rdna4-required
     runs-on: [self-hosted, amd, rdna4]
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     env:
-      # genesis-amd image validated on R9700 (quadrants-main + render deps).
-      # Upstream can swap for a registry image, or build from docker/Dockerfile.amdgpu
-      # via the commented step below.
+      # genesis-amd image validated on R9700 (ROCm + render deps).
       GENESIS_AMD_IMAGE: genesis-amd:latest
       HIP_VISIBLE_DEVICES: "0"
 
     steps:
-      - name: Checkout code
+      - name: Checkout upstream genesis-world @ main
         uses: actions/checkout@v4
-
-      # Optional reproducible path: build the image from the in-repo Dockerfile.
-      # - name: Build ROCm image
-      #   run: docker build -f docker/Dockerfile.amdgpu -t "$GENESIS_AMD_IMAGE" docker
+        with:
+          repository: Genesis-Embodied-AI/genesis-world
+          ref: main
 
       - name: GPU + backend sanity
         run: |
