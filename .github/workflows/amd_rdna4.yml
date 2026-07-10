@@ -1,0 +1,74 @@
+# genesis-world CI — AMD RDNA4 (R9700) leg.
+# always-on default leg: gate push / workflow_dispatch. The CDNA (banff/MI300) leg
+# lives in a separate amd_cdna.yml (best-effort, dispatch/schedule).
+#
+# Prereq: register a self-hosted runner on the R9700 host with
+#   labels = [self-hosted, amd, rdna4]
+# The runner host only needs docker + ROCm driver (/dev/kfd, /dev/dri);
+# all tests run inside the container.
+name: AMD RDNA4 (R9700)
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ["amd-ci"]
+  # Enable once the required subset is stable, to avoid noisy PR gating:
+  # pull_request:
+  #   branches: ["main"]
+
+concurrency:
+  group: amd-rdna4-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  amd-rdna4-tests:
+    name: rdna4-required
+    runs-on: [self-hosted, amd, rdna4]
+    timeout-minutes: 90
+
+    env:
+      # genesis-amd image validated on R9700 (quadrants-main + render deps).
+      # Upstream can swap for a registry image, or build from docker/Dockerfile.amdgpu
+      # via the commented step below.
+      GENESIS_AMD_IMAGE: genesis-amd:latest
+      HIP_VISIBLE_DEVICES: "0"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Optional reproducible path: build the image from the in-repo Dockerfile.
+      # - name: Build ROCm image
+      #   run: docker build -f docker/Dockerfile.amdgpu -t "$GENESIS_AMD_IMAGE" docker
+
+      - name: GPU + backend sanity
+        run: |
+          docker run --rm \
+            --device=/dev/kfd --device=/dev/dri \
+            --group-add video --group-add render \
+            --security-opt seccomp=unconfined --ipc=host \
+            -e HIP_VISIBLE_DEVICES \
+            "$GENESIS_AMD_IMAGE" bash -lc '
+              rocm-smi --showproductname || true
+              python -c "import genesis as gs; gs.init(backend=gs.gpu)"
+            '
+
+      - name: Run required GPU tests
+        run: |
+          docker run --rm \
+            --device=/dev/kfd --device=/dev/dri \
+            --group-add video --group-add render \
+            --security-opt seccomp=unconfined --ipc=host \
+            -e HIP_VISIBLE_DEVICES \
+            -e PYOPENGL_PLATFORM=egl \
+            -e QD_ENABLE_AMDGPU=1 \
+            -e FORCE_COLOR=1 -e PY_COLORS=1 \
+            -v "${{ github.workspace }}":/workspace/genesis \
+            -w /workspace/genesis \
+            "$GENESIS_AMD_IMAGE" bash -lc '
+              set -ex
+              pip install -e ".[dev,render]"
+              # Single GPU: disable xdist parallelism (-n0) to avoid GPU contention;
+              # --forked isolates each test in its own process.
+              pytest -v -ra --backend gpu --dev -m "required and not slow" --forked -n0 ./tests
+            '
